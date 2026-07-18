@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Apex One Tower — Mobile</title>
+<style>
+:root{
+  --bg:#0a121b;--panel:rgba(8,16,24,.9);--line:rgba(255,255,255,.12);
+  --text:#f5f8fb;--muted:#9fb1be;--accent:#69c7f0;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);font-family:Arial,Helvetica,sans-serif;color:var(--text)}
+canvas{position:fixed;inset:0;width:100%;height:100%;touch-action:none}
+#top{
+  position:fixed;left:12px;right:12px;top:max(12px,env(safe-area-inset-top));
+  background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:12px 14px;
+  backdrop-filter:blur(12px);z-index:2
+}
+#top h1{margin:0;font-size:17px;letter-spacing:.06em}
+#top p{margin:4px 0 0;color:var(--muted);font-size:11px;line-height:1.35}
+#bottom{
+  position:fixed;left:12px;right:12px;bottom:max(12px,env(safe-area-inset-bottom));
+  background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:12px;
+  backdrop-filter:blur(12px);z-index:2
+}
+.row{display:flex;gap:8px;margin-top:8px}
+button,select{
+  appearance:none;border:1px solid var(--line);background:rgba(255,255,255,.06);color:#fff;
+  border-radius:11px;padding:11px 10px;font-size:13px
+}
+button{flex:1}
+button.active{background:rgba(105,199,240,.2);border-color:rgba(105,199,240,.55)}
+select{width:100%}
+#details{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4}
+#hint{
+  position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+  padding:8px 12px;background:rgba(0,0,0,.55);border-radius:999px;font-size:11px;z-index:1;
+  pointer-events:none;transition:opacity .5s
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="top">
+  <h1>APEX ONE TOWER</h1>
+  <p>Touch and drag to rotate · pinch to zoom · tap a floor to select it</p>
+</div>
+
+<div id="bottom">
+  <select id="floorSelect"></select>
+  <div class="row">
+    <button id="allBtn" class="active">Show all</button>
+    <button id="hideBtn">Hide above</button>
+    <button id="isolateBtn">Isolate</button>
+  </div>
+  <div class="row">
+    <button id="explodeBtn">Explode</button>
+    <button id="nightBtn">Night</button>
+    <button id="resetBtn">Reset</button>
+  </div>
+  <div id="details"></div>
+</div>
+
+<div id="hint">Drag the tower</div>
+
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W=innerWidth,H=innerHeight,DPR=Math.min(devicePixelRatio||1,2);
+function resize(){W=innerWidth;H=innerHeight;canvas.width=W*DPR;canvas.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0)}
+resize(); addEventListener('resize',resize);
+
+const floors=[
+{name:'Basement B2',h:4.5,use:'Parking, generators, water tanks'},
+{name:'Basement B1',h:4.5,use:'Parking, staff and maintenance'},
+{name:'Ground Floor',h:8,use:'Double-height lobby and retail'},
+...Array.from({length:17},(_,i)=>({name:'Office Floor '+(i+2),h:4,use:'Corporate offices and meeting rooms'})),
+{name:'Executive Floor 19',h:4,use:'Executive suites and boardrooms'},
+{name:'Executive Floor 20',h:4,use:'Executive suites and VIP lounge'},
+{name:'Executive Floor 21',h:4,use:'Executive suites and terrace'},
+{name:'Sky Lounge 22',h:6,use:'Restaurant, terrace and infinity pool'},
+{name:'Wellness 23',h:4.5,use:'Gym, spa and indoor garden'},
+{name:'Observation 24',h:4.5,use:'Viewing deck and roof garden'}
+];
+
+let selected=2,mode='all',angle=-0.62,zoom=1,explode=false,night=false;
+let dragging=false,lastX=0,lastY=0,pinchStart=0,zoomStart=1;
+
+const select=document.getElementById('floorSelect');
+floors.forEach((f,i)=>{const o=document.createElement('option');o.value=i;o.textContent=(i<2?f.name:i===2?'G — Ground':(i-2)+' — '+f.name);select.appendChild(o)});
+select.value=selected; select.onchange=()=>{selected=+select.value;updateDetails();draw()};
+
+function updateDetails(){
+ const f=floors[selected];
+ document.getElementById('details').innerHTML='<b style="color:#fff">'+f.name+'</b><br>'+f.use+' · Floor height '+f.h+' m';
+}
+updateDetails();
+
+function iso(x,y,z){
+ const ca=Math.cos(angle),sa=Math.sin(angle);
+ const rx=x*ca-z*sa, rz=x*sa+z*ca;
+ const scale=zoom*Math.min(W,H)/165;
+ return {x:W/2+rx*scale,y:H*.67-(y*scale)-rz*.38*scale};
+}
+function poly(points,fill,stroke='rgba(255,255,255,.12)'){
+ ctx.beginPath();ctx.moveTo(points[0].x,points[0].y);
+ for(let i=1;i<points.length;i++)ctx.lineTo(points[i].x,points[i].y);
+ ctx.closePath();ctx.fillStyle=fill;ctx.fill();ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.stroke();
+}
+function floorVisible(i){
+ if(mode==='isolate')return i===selected;
+ if(mode==='hide')return i<=selected;
+ return true;
+}
+function colors(i,sel){
+ if(i<2)return night?['#28333d','#1f2a34','#34414c']:['#787f84','#666d72','#8a9196'];
+ if(sel)return night?['#4ea5cc','#307ca3','#63bfe4']:['#86d7f5','#55add3','#a7e5fb'];
+ if(night)return ['#17354a','#10293c','#214760'];
+ return ['#6faec6','#4e8da7','#8ec7db'];
+}
+function drawTower(){
+ let y=-9;
+ const visible=[];
+ for(let i=0;i<floors.length;i++){
+   const f=floors[i],gap=explode?i*1.4:0;
+   if(floorVisible(i))visible.push({i,y:y+gap,h:f.h});
+   y+=f.h;
+ }
+ // plaza
+ const plaza=[iso(-55,0,-38),iso(55,0,-38),iso(55,0,38),iso(-55,0,38)];
+ poly(plaza,night?'#1b2630':'#b7b0a2','rgba(255,255,255,.08)');
+ // water
+ poly([iso(-50,.2,28),iso(-12,.2,28),iso(-12,.2,36),iso(-50,.2,36)],night?'#0f5b78':'#3c9fc0');
+ poly([iso(12,.2,28),iso(50,.2,28),iso(50,.2,36),iso(12,.2,36)],night?'#0f5b78':'#3c9fc0');
+
+ for(const f of visible){
+   let taper=f.i>18?(f.i-18)*1.15:0,w=60-taper,d=40-taper*.55;
+   const y0=f.y,y1=f.y+f.h;
+   const A=iso(-w/2,y0,-d/2),B=iso(w/2,y0,-d/2),C=iso(w/2,y0,d/2),D=iso(-w/2,y0,d/2);
+   const A2=iso(-w/2,y1,-d/2),B2=iso(w/2,y1,-d/2),C2=iso(w/2,y1,d/2),D2=iso(-w/2,y1,d/2);
+   const col=colors(f.i,f.i===selected);
+   poly([A,B,B2,A2],col[1]);
+   poly([B,C,C2,B2],col[0]);
+   poly([D,C,C2,D2],col[2]);
+   poly([A2,B2,C2,D2],night?'#2c3943':'#d9dde0');
+   if(f.i>=2){
+     ctx.strokeStyle=night?'rgba(255,214,125,.38)':'rgba(255,255,255,.36)';
+     ctx.lineWidth=.7;
+     for(let k=1;k<6;k++){
+       const t=k/6;
+       const p1={x:B.x+(C.x-B.x)*t,y:B.y+(C.y-B.y)*t};
+       const p2={x:B2.x+(C2.x-B2.x)*t,y:B2.y+(C2.y-B2.y)*t};
+       ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();
+     }
+   }
+ }
+ // podium
+ const y0=0,y1=7,w=78,d=54;
+ const A=iso(-w/2,y0,-d/2),B=iso(w/2,y0,-d/2),C=iso(w/2,y0,d/2),D=iso(-w/2,y0,d/2);
+ const A2=iso(-w/2,y1,-d/2),B2=iso(w/2,y1,-d/2),C2=iso(w/2,y1,d/2),D2=iso(-w/2,y1,d/2);
+ poly([A,B,B2,A2],night?'#47423c':'#aaa294');
+ poly([B,C,C2,B2],night?'#615a50':'#c1b9aa');
+ poly([D,C,C2,D2],night?'#756d60':'#d1c8b7');
+ poly([A2,B2,C2,D2],night?'#3d3a36':'#d5cec1');
+}
+function draw(){
+ ctx.clearRect(0,0,W,H);
+ const g=ctx.createLinearGradient(0,0,0,H);
+ if(night){g.addColorStop(0,'#07111d');g.addColorStop(1,'#101924')}
+ else{g.addColorStop(0,'#9fcadd');g.addColorStop(1,'#e6eef2')}
+ ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+ // stars/night lights
+ if(night){
+   ctx.fillStyle='rgba(255,255,255,.8)';
+   for(let i=0;i<40;i++){const x=(i*97)%W,y=(i*53)%Math.max(160,H*.45);ctx.fillRect(x,y,1,1)}
+ }
+ drawTower();
+}
+draw();
+
+function setActive(id){
+ ['allBtn','hideBtn','isolateBtn'].forEach(x=>document.getElementById(x).classList.toggle('active',x===id));
+}
+document.getElementById('allBtn').onclick=()=>{mode='all';setActive('allBtn');draw()};
+document.getElementById('hideBtn').onclick=()=>{mode='hide';setActive('hideBtn');draw()};
+document.getElementById('isolateBtn').onclick=()=>{mode='isolate';setActive('isolateBtn');draw()};
+document.getElementById('explodeBtn').onclick=e=>{explode=!explode;e.currentTarget.classList.toggle('active',explode);draw()};
+document.getElementById('nightBtn').onclick=e=>{night=!night;e.currentTarget.classList.toggle('active',night);draw()};
+document.getElementById('resetBtn').onclick=()=>{angle=-.62;zoom=1;mode='all';explode=false;night=false;setActive('allBtn');document.getElementById('explodeBtn').classList.remove('active');document.getElementById('nightBtn').classList.remove('active');draw()};
+
+canvas.addEventListener('pointerdown',e=>{dragging=true;lastX=e.clientX;lastY=e.clientY;canvas.setPointerCapture(e.pointerId);document.getElementById('hint').style.opacity=0});
+canvas.addEventListener('pointermove',e=>{if(!dragging)return;angle+=(e.clientX-lastX)*.008;zoom=Math.max(.55,Math.min(1.7,zoom-(e.clientY-lastY)*.002));lastX=e.clientX;lastY=e.clientY;draw()});
+canvas.addEventListener('pointerup',()=>dragging=false);
+canvas.addEventListener('wheel',e=>{e.preventDefault();zoom=Math.max(.55,Math.min(1.7,zoom-e.deltaY*.001));draw()},{passive:false});
+
+canvas.addEventListener('touchstart',e=>{
+ if(e.touches.length===2){
+   pinchStart=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+   zoomStart=zoom;
+ }
+},{passive:true});
+canvas.addEventListener('touchmove',e=>{
+ if(e.touches.length===2){
+   const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+   zoom=Math.max(.55,Math.min(1.7,zoomStart*d/pinchStart));draw();
+ }
+},{passive:true});
+
+setTimeout(()=>document.getElementById('hint').style.opacity=0,2500);
+</script>
+</body>
+</html>
